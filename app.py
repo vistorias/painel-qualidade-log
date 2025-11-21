@@ -1013,10 +1013,22 @@ st.markdown("---")
 st.markdown('<div class="section">📐 % de erro por vistoriador</div>', unsafe_allow_html=True)
 denom_mode = st.session_state.get("denom_mode_global", "Bruta (recomendado)")
 
-# Metas e tolerância
-META_ERRO     = 3.5
-META_ERRO_GG  = 1.5
-TOL_AMARELO   = 0.5
+# Metas padrão (fallback) e metas por cidade
+DEFAULT_META_ERRO    = 3.5   # usada se a cidade não estiver mapeada
+DEFAULT_META_ERRO_GG = 1.5
+TOL_AMARELO          = 0.5
+
+CITY_METAS = {
+    "ACAILANDIA": (3.5, 1.5),
+    "CAROLINA":   (5.0, 2.0),
+    "PRES DUTRA": (5.0, 2.0),
+    "SAO LUIS":   (3.5, 1.5),
+    "TIMON":      (5.0, 2.0),
+}
+
+def get_metas_cidade(unidade: str):
+    unidade = _upper(unidade)
+    return CITY_METAS.get(unidade, (DEFAULT_META_ERRO, DEFAULT_META_ERRO_GG))
 
 def _farol(pct, meta, tol=TOL_AMARELO):
     if pd.isna(pct): return "—"
@@ -1068,13 +1080,53 @@ qual = (
 
 # ------------------ BASE FINAL ------------------
 base = prod.merge(qual, on="VISTORIADOR", how="outer").fillna(0)
+
 den = base["liq"] if denom_mode.startswith("Líquida") else base["vist"]
 den = den.replace({0: np.nan})
 
 base["%ERRO"]    = ((base["erros"]    / den) * 100).round(1)
 base["%ERRO_GG"] = ((base["erros_gg"] / den) * 100).round(1)
-base["FAROL_%ERRO"]    = base["%ERRO"].apply(lambda v: _farol(v, META_ERRO))
-base["FAROL_%ERRO_GG"] = base["%ERRO_GG"].apply(lambda v: _farol(v, META_ERRO_GG))
+
+# ---- Unidade principal por vistoriador (para puxar meta da cidade) ----
+if not dfP.empty:
+    df_unid_map = dfP.copy()
+    if "UNIDADE" in df_unid_map.columns:
+        df_unid_map["UNIDADE"] = df_unid_map["UNIDADE"].astype(str).map(_upper)
+        # cidade mais frequente por vistoriador
+        unid_pref = (
+            df_unid_map.groupby(["VISTORIADOR","UNIDADE"])["__DATA__"]
+            .size()
+            .reset_index(name="QTD")
+            .sort_values(["VISTORIADOR","QTD"], ascending=[True, False])
+            .drop_duplicates("VISTORIADOR")
+            .set_index("VISTORIADOR")["UNIDADE"]
+            .to_dict()
+        )
+    else:
+        unid_pref = {}
+else:
+    unid_pref = {}
+
+base["UNIDADE"] = base["VISTORIADOR"].map(unid_pref)
+
+def _aplica_metas_por_linha(row):
+    meta_total, meta_gg = get_metas_cidade(row.get("UNIDADE", ""))
+    return pd.Series({
+        "FAROL_%ERRO":    _farol(row["%ERRO"], meta_total),
+        "FAROL_%ERRO_GG": _farol(row["%ERRO_GG"], meta_gg),
+        "META_%ERRO":     meta_total,
+        "META_%ERRO_GG":  meta_gg,
+    })
+
+if len(base):
+    base[["FAROL_%ERRO","FAROL_%ERRO_GG","META_%ERRO","META_%ERRO_GG"]] = base.apply(
+        _aplica_metas_por_linha, axis=1
+    )
+else:
+    base["FAROL_%ERRO"] = []
+    base["FAROL_%ERRO_GG"] = []
+    base["META_%ERRO"] = []
+    base["META_%ERRO_GG"] = []
 
 # ------------------ FORMATAÇÃO E ORDENAÇÃO ------------------
 fmt = base.copy()
@@ -1092,13 +1144,14 @@ fmt["%ERRO_GG"] = fmt.apply(lambda r: _fmt_val_pct(r["%ERRO_GG"], r["FAROL_%ERRO
 # Ordenação decrescente pelo valor numérico real (%ERRO)
 fmt_sorted = fmt.sort_values(by="%ERRO", key=lambda col: base.loc[col.index, "%ERRO"], ascending=False)
 
-cols_view = ["VISTORIADOR","vist","rev","liq","erros","erros_gg","%ERRO","%ERRO_GG"]
+cols_view = ["VISTORIADOR","UNIDADE","vist","rev","liq","erros","erros_gg","%ERRO","%ERRO_GG"]
 
 st.dataframe(
     fmt_sorted[cols_view],
     use_container_width=True,
     hide_index=True,
 )
+
 # ------------------ EXPORTAR EXCEL COM FAROL DE CORES ------------------
 try:
     from openpyxl import Workbook
@@ -1115,13 +1168,14 @@ else:
     ws.title = "Erros por Vistoriador"
 
     # Cabeçalho
-    headers = ["VISTORIADOR","vist","rev","liq","erros","erros_gg","%ERRO","%ERRO_GG"]
+    headers = ["VISTORIADOR","UNIDADE","vist","rev","liq","erros","erros_gg","%ERRO","%ERRO_GG"]
     ws.append(headers)
 
     # Linhas (usamos o DataFrame já ordenado e com farol calculado)
     for _, r in fmt_sorted.iterrows():
         ws.append([
             r["VISTORIADOR"],
+            r.get("UNIDADE", ""),
             int(r["vist"]), int(r["rev"]), int(r["liq"]),
             int(r["erros"]), int(r["erros_gg"]),
             r["%ERRO"], r["%ERRO_GG"]
@@ -1137,20 +1191,19 @@ else:
             return PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")  # vermelho
         return PatternFill(fill_type=None)
 
-    # Aplicar cores nas colunas %ERRO (G) e %ERRO_GG (H)
-    # Começa na linha 2 (linha 1 é o cabeçalho)
+    # Aplicar cores nas colunas %ERRO (H) e %ERRO_GG (I)
     for i, (_, r) in enumerate(fmt_sorted.iterrows(), start=2):
         fill_total = _fill_from_farol(r.get("FAROL_%ERRO"))
         fill_gg    = _fill_from_farol(r.get("FAROL_%ERRO_GG"))
 
-        ws[f"G{i}"].fill = fill_total
-        ws[f"H{i}"].fill = fill_gg
+        ws[f"H{i}"].fill = fill_total
+        ws[f"I{i}"].fill = fill_gg
 
-        ws[f"G{i}"].alignment = Alignment(horizontal="center")
         ws[f"H{i}"].alignment = Alignment(horizontal="center")
+        ws[f"I{i}"].alignment = Alignment(horizontal="center")
 
     # Largura das colunas
-    widths = {"A":28, "B":10, "C":10, "D":10, "E":10, "F":10, "G":12, "H":12}
+    widths = {"A":28, "B":18, "C":10, "D":10, "E":10, "F":10, "G":10, "H":16, "I":16}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
 
@@ -1168,9 +1221,9 @@ else:
 
 # ------------------ LEGENDA ------------------
 with st.expander("Legenda do farol", expanded=False):
-    st.write(f"🟢 Dentro da meta · %ERRO ≤ {META_ERRO:.1f}% · %ERRO_GG ≤ {META_ERRO_GG:.1f}%")
-    st.write(f"🟡 Até {TOL_AMARELO:.1f} pp acima da meta")
-    st.write("🔴 Acima da meta + tolerância")
+    st.write("🟢 Dentro da meta definida para a unidade (cidade).")
+    st.write(f"🟡 Até {TOL_AMARELO:.1f} pp acima da meta da unidade.")
+    st.write("🔴 Acima da meta + tolerância.")
 
 if fallback_note:
     st.caption(f"ℹ️ {fallback_note}")
@@ -1464,8 +1517,8 @@ rank = (base.copy())
 rank = rank[den > 0].replace({np.inf: np.nan}).dropna(subset=["%ERRO"])
 
 den_col = "liq" if denom_mode.startswith("Líquida") else "vist"
-col_titulo_den = "vistórias líquidas" if den_col == "liq" else "vistórias"
-cols_rank = ["VISTORIADOR", den_col, "erros", "%ERRO", "%ERRO_GG"]
+col_titulo_den = "vistorias líquidas" if den_col == "liq" else "vistorias"
+cols_rank = ["VISTORIADOR","UNIDADE", den_col, "erros", "%ERRO", "%ERRO_GG"]
 rank_view = rank[cols_rank].rename(columns={den_col: col_titulo_den})
 
 for c in [col_titulo_den, "erros"]:
