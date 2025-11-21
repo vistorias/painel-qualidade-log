@@ -1019,10 +1019,10 @@ DEFAULT_META_ERRO_GG = 1.5
 TOL_AMARELO          = 0.5
 
 CITY_METAS = {
-    "ACAILANDIA": (3.5, 1.5),
+    "AÇAILÂNDIA": (3.5, 1.5),
     "CAROLINA":   (5.0, 2.0),
-    "PRES DUTRA": (5.0, 2.0),
-    "SAO LUIS":   (3.5, 1.5),
+    "PRESIDENTE DUTRA": (5.0, 2.0),
+    "SÃO LUIS":   (3.5, 1.5),
     "TIMON":      (5.0, 2.0),
 }
 
@@ -1550,3 +1550,4 @@ else:
     df_fraude = df_fraude[cols_fraude].sort_values(["DATA","UNIDADE","VISTORIADOR"])
     st.dataframe(df_fraude, use_container_width=True, hide_index=True)
     st.caption('<div class="table-note">* Somente linhas cujo **ERRO** é exatamente “TENTATIVA DE FRAUDE”.</div>', unsafe_allow_html=True)
+
