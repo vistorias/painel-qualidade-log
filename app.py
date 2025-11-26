@@ -11,7 +11,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import altair as alt
-
+3
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from dateutil.relativedelta import relativedelta
@@ -380,13 +380,12 @@ dfQ = pd.concat(dq_all, ignore_index=True)
 dfP = pd.concat(dp_all, ignore_index=True) if dp_all else pd.DataFrame(columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"])
 dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","YM"])
 
-# Normaliza TEMPO_CASA (NOVATO / VETERANO)
+# Normaliza TEMPO_CASA (NOVATO / VETERANO) — IGUAL STARCHECK
 if "TEMPO_CASA" in dfQ.columns:
     dfQ["TEMPO_CASA"] = dfQ["TEMPO_CASA"].astype(str).map(_upper)
 
 
 # ------------------ FILTROS PRINCIPAIS ------------------
-# Se tiver coluna EMPRESA, filtra só LOG
 if "EMPRESA" in dfQ.columns:
     dfQ = dfQ[dfQ["EMPRESA"] == "LOG"].copy()
 
@@ -427,8 +426,7 @@ with col2:
         f_unids = st.multiselect("Unidades (opcional)", unids, default=unids)
     with c22:
         f_vists = st.multiselect("Vistoriadores (opcional)", vist_opts)
-
-    # Filtro de tempo de casa — Novatos/Veteranos
+    # Filtro de tempo de casa no cabeçalho — IGUAL STARCHECK
     perfil_sel = st.radio(
         "Perfil (tempo de casa)",
         ["Todos", "Novatos", "Veteranos"],
@@ -808,8 +806,8 @@ if "UNIDADE" in viewQ.columns:
 
         # ---------- Somente GRAVE + GRAVÍSSIMO por unidade ----------
         with g_gg:
-            mask_gg_local = viewQ["GRAVIDADE"].astype(str).str.upper().isin(grav_gg) if "GRAVIDADE" in viewQ.columns else pd.Series(False, index=viewQ.index)
-            viewQ_gg = viewQ[mask_gg_local]
+            mask_gg = viewQ["GRAVIDADE"].astype(str).str.upper().isin(grav_gg) if "GRAVIDADE" in viewQ.columns else pd.Series(False, index=viewQ.index)
+            viewQ_gg = viewQ[mask_gg]
 
             by_city_gg = (
                 viewQ_gg.groupby("UNIDADE", dropna=False)["ERRO"].size().reset_index(name="QTD_GG")
@@ -1146,12 +1144,12 @@ denom_mode = st.session_state.get("denom_mode_global", "Bruta (recomendado)")
 def _norm_city(x: str) -> str:
     return _strip_accents(_upper(x))
 
-# Ajuste este dicionário com as metas da LOG por cidade, se tiver.
-# Formato: "NOME_CIDADE_NORMALIZADO": (meta_total, meta_gg)
 CITY_METAS = {
-    # Exemplo:
-    # _norm_city("CIDADE A"): (3.5, 1.5),
-    # _norm_city("CIDADE B"): (5.0, 2.0),
+    _norm_city("AÇAILÂNDIA"):        (3.5, 1.5),
+    _norm_city("CAROLINA"):          (5.0, 2.0),
+    _norm_city("PRESIDENTE DUTRA"):  (5.0, 2.0),
+    _norm_city("SÃO LUIS"):          (3.5, 1.5),
+    _norm_city("TIMON"):             (5.0, 2.0),
 }
 
 def _metas_cidade(cidade: str) -> tuple[float, float]:
@@ -1362,7 +1360,7 @@ with st.expander("Legenda do farol", expanded=False):
     st.write("🔴 Acima da meta + tolerância")
 if fallback_note:
     st.caption(f"ℹ️ {fallback_note}")
-
+    
 # ------------------ TENDÊNCIA DE ERROS (projeção) ------------------
 st.markdown("---")
 st.markdown('<div class="section">📈 Tendência de erros (projeção até o fim do mês)</div>', unsafe_allow_html=True)
@@ -1504,37 +1502,37 @@ if not fast_mode:
 
     def _pct_week(qdf, pdf):
         """ERROS por vist. + %ERRO (bruta ou líquida) para uma janela semanal."""
-        grav_gg_local = {"GRAVE", "GRAVISSIMO", "GRAVÍSSIMO"}
+        grav_gg = {"GRAVE", "GRAVISSIMO", "GRAVÍSSIMO"}
 
         if qdf.empty:
-            qual_local = pd.DataFrame(columns=["VISTORIADOR","ERROS","ERROS_GG"])
+            qual = pd.DataFrame(columns=["VISTORIADOR","ERROS","ERROS_GG"])
         else:
-            qual_local = (qdf.groupby("VISTORIADOR", dropna=False)
+            qual = (qdf.groupby("VISTORIADOR", dropna=False)
                     .agg(ERROS=("ERRO","size"),
-                         ERROS_GG=("GRAVIDADE", lambda s: s.isin(grav_gg_local).sum()))
+                         ERROS_GG=("GRAVIDADE", lambda s: s.isin(grav_gg).sum()))
                     .reset_index())
 
         if pdf.empty:
-            prod_local = pd.DataFrame(columns=["VISTORIADOR","vist","rev","liq"])
+            prod = pd.DataFrame(columns=["VISTORIADOR","vist","rev","liq"])
         else:
-            prod_local = (pdf.groupby("VISTORIADOR", dropna=False)
+            prod = (pdf.groupby("VISTORIADOR", dropna=False)
                     .agg(vist=("IS_REV","size"), rev=("IS_REV","sum"))
                     .reset_index())
-            prod_local["liq"] = prod_local["vist"] - prod_local["rev"]
+            prod["liq"] = prod["vist"] - prod["rev"]
 
         den_col = "liq" if denom_mode.startswith("Líquida") else "vist"
-        out_local = prod_local.merge(qual_local, on="VISTORIADOR", how="outer").fillna(0)
+        out = prod.merge(qual, on="VISTORIADOR", how="outer").fillna(0)
 
         for c in ["vist","rev","liq","ERROS","ERROS_GG"]:
-            if c in out_local.columns:
-                out_local[c] = pd.to_numeric(out_local[c], errors="coerce").fillna(0)
+            if c in out.columns:
+                out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
 
-        den_local = out_local[den_col].replace({0: np.nan}).astype(float)
-        out_local["%ERRO"]    = (out_local["ERROS"]    / den_local * 100).round(1)
-        out_local["%ERRO_GG"] = (out_local["ERROS_GG"] / den_local * 100).round(1)
-        out_local["DEN"] = out_local[den_col].fillna(0).astype(int)
+        den = out[den_col].replace({0: np.nan}).astype(float)
+        out["%ERRO"]    = (out["ERROS"]    / den * 100).round(1)
+        out["%ERRO_GG"] = (out["ERROS_GG"] / den * 100).round(1)
+        out["DEN"] = out[den_col].fillna(0).astype(int)
 
-        return out_local[["VISTORIADOR","ERROS","%ERRO","ERROS_GG","%ERRO_GG","DEN"]]
+        return out[["VISTORIADOR","ERROS","%ERRO","ERROS_GG","%ERRO_GG","DEN"]]
 
     def _make_week_block(di, dfim, prefix, meta_list):
         q = _slice_q(viewQ, di, dfim)
@@ -1566,7 +1564,7 @@ if not fast_mode:
             blocks.append(_make_week_block(di, dfim, f"S{i}_", meta))
 
         from functools import reduce
-        tab_sem = reduce(
+        tab = reduce(
             lambda L, R: L.merge(R, left_on=f"{L.columns[0]}", right_on=f"{R.columns[0]}", how="outer"),
             blocks
         )
@@ -1577,11 +1575,11 @@ if not fast_mode:
                 if isinstance(v, str) and v.strip():
                     return v
             return ""
-        tab_sem["VISTORIADOR"] = tab_sem.apply(_pick_row, axis=1)
+        tab["VISTORIADOR"] = tab.apply(_pick_row, axis=1)
 
-        for c in tab_sem.columns:
+        for c in tab.columns:
             if c.endswith("ERROS") or c.endswith("ERROS_GG") or c.endswith("DEN"):
-                tab_sem[c] = pd.to_numeric(tab_sem[c], errors="coerce").fillna(0).astype(int)
+                tab[c] = pd.to_numeric(tab[c], errors="coerce").fillna(0).astype(int)
 
         def _status_pp(delta):
             if pd.isna(delta): return "—"
@@ -1591,8 +1589,8 @@ if not fast_mode:
 
         for i in range(1, k):
             dcol = f"Δ_%ERRO_S{i}_S{i+1}"
-            tab_sem[dcol] = (tab_sem[f"S{i+1}_%ERRO"] - tab_sem[f"S{i}_%ERRO"]).round(1)
-            tab_sem[f"Status (S{i}→S{i+1})"] = tab_sem[dcol].map(_status_pp)
+            tab[dcol] = (tab[f"S{i+1}_%ERRO"] - tab[f"S{i}_%ERRO"]).round(1)
+            tab[f"Status (S{i}→S{i+1})"] = tab[dcol].map(_status_pp)
 
         def _status3(p1, p2, p3):
             if any(pd.isna([p1, p2, p3])): return "—"
@@ -1604,9 +1602,9 @@ if not fast_mode:
             return "Sem alteração (↔↔)"
 
         if k >= 3:
-            tab_sem["Status (3-semanas)"] = [
+            tab["Status (3-semanas)"] = [
                 _status3(r.get(f"S{k-2}_%ERRO", np.nan), r.get(f"S{k-1}_%ERRO", np.nan), r.get(f"S{k}_%ERRO", np.nan))
-                for _, r in tab_sem.iterrows()
+                for _, r in tab.iterrows()
             ]
 
         def _fmt_pct(x): return "—" if pd.isna(x) else f"{x:.1f}%".replace(".", ",")
@@ -1622,16 +1620,16 @@ if not fast_mode:
         if k >= 3:
             cols += ["Status (3-semanas)"]
 
-        out_sem = tab_sem[cols].copy()
+        out = tab[cols].copy()
 
-        for c in out_sem.columns:
+        for c in out.columns:
             if c.endswith("%ERRO") or c.endswith("%ERRO_GG"):
-                out_sem[c] = out_sem[c].map(_fmt_pct)
+                out[c] = out[c].map(_fmt_pct)
             elif c.startswith("Δ_%ERRO_"):
-                out_sem[c] = out_sem[c].map(_fmt_pp)
+                out[c] = out[c].map(_fmt_pp)
 
-        order_key = tab_sem[f"S{k}_%ERRO"].fillna(-1).values
-        out_sem = out_sem.iloc[np.argsort(-order_key)]
+        order_key = tab[f"S{k}_%ERRO"].fillna(-1).values
+        out = out.iloc[np.argsort(-order_key)]
 
         legend_parts = []
         for i, (prefix, di, dfim) in enumerate(meta, start=1):
@@ -1641,7 +1639,7 @@ if not fast_mode:
             legend_parts.append(label)
         st.caption("  ·  ".join(legend_parts))
 
-        st.dataframe(out_sem.reset_index(drop=True), use_container_width=True, hide_index=True)
+        st.dataframe(out.reset_index(drop=True), use_container_width=True, hide_index=True)
 
 # ------------------ RANKINGS ------------------
 st.markdown("---")
@@ -1668,7 +1666,7 @@ with c_best:
 with c_worst:
     worst5 = rank_view.sort_values("%ERRO", ascending=False).head(5)
     st.subheader("⚠️ Top 5 piores (maior %Erro)")
-    st.dataframe(worst5.reset_index(drop_index=True), use_container_width=True, hide_index=True)
+    st.dataframe(worst5.reset_index(drop=True), use_container_width=True, hide_index=True)
 
 # ------------------ FRAUDE ------------------
 st.markdown("---")
