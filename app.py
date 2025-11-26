@@ -305,8 +305,8 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             c_unid = _find_col(cols, "UNIDADE")
             c_meta = _find_col(cols, "META_MENSAL", "META MENSAL", "META")
             c_du   = _find_col(cols, "DIAS ÚTEIS", "DIAS UTEIS", "DIAS_UTEIS")
-            # NOVO: coluna tempo de casa (aceita "tempo de casa", "TEMPO_CASA" etc.)
-            c_tc   = _find_col(cols, "TEMPO_CASA", "TEMPO CASA", "TEMPO DE CASA", "TEMPO DE CASA")
+            # aceita "tempo de casa", "TEMPO_CASA" etc.
+            c_tc   = _find_col(cols, "TEMPO_CASA", "TEMPO CASA", "TEMPO DE CASA", "tempo de casa")
 
             out = pd.DataFrame()
             out["VISTORIADOR"] = dm[c_vist].astype(str).map(_upper) if c_vist else ""
@@ -373,7 +373,7 @@ if show_tech:
     if er_q:
         with st.expander("Falhas (Qualidade)"):
             for sid, e in er_q: st.write(sid); st.exception(e)
-    if ok_p: st.success("Produção conectada em:\n\n- " + "\n- ".join(ok_p))
+    if ok_p: st.success("Produção conectado em:\n\n- " + "\n- ".join(ok_p))
     if er_p:
         with st.expander("Falhas (Produção)"):
             for sid, e in er_p: st.write(sid); st.exception(e)
@@ -395,6 +395,22 @@ if not dfMetas.empty and "TEMPO_CASA" in dfMetas.columns:
     metas_tc = metas_tc[metas_tc["TEMPO_CASA"].str.strip() != ""]
     if not metas_tc.empty:
         tempo_map = metas_tc.drop_duplicates("VISTORIADOR").set_index("VISTORIADOR")["TEMPO_CASA"].to_dict()
+
+# classificador simples: NOVATO x VETERANO, igual lógica que usamos nas outras marcas
+def _classify_tc(label: str) -> str:
+    s = str(label).upper()
+    if "NOVATO" in s or "NOVO" in s or "INÍCIO" in s or "INICIO" in s:
+        return "NOVATO"
+    if "VETERANO" in s or "ANTIGO" in s:
+        return "VETERANO"
+    return ""
+
+grupo_tc = {}
+if tempo_map:
+    for vist, tc in tempo_map.items():
+        tag = _classify_tc(tc)
+        if tag:
+            grupo_tc[vist] = tag
 
 
 # ------------------ FILTROS PRINCIPAIS ------------------
@@ -436,25 +452,31 @@ with col2:
         f_unids = st.multiselect("Unidades (opcional)", unids, default=unids)
     with c22:
         f_vists = st.multiselect("Vistoriadores (opcional)", vist_opts)
-    # NOVO: filtro por tempo de casa (multiseleção)
-    tempo_opts = []
-    if tempo_map:
-        tempo_opts = sorted(set(tempo_map.values()))
+    # NOVO: filtro por tempo de casa no estilo Novato/Veterano
     with c23:
-        if tempo_opts:
-            tempo_sel = st.multiselect("Tempo de casa", tempo_opts, default=tempo_opts)
+        if grupo_tc:
+            tipo_tc = st.radio(
+                "Tempo de casa",
+                ["Todos", "Novatos", "Veteranos"],
+                index=0
+            )
         else:
-            tempo_sel = []
+            tipo_tc = "Todos"
+
+# helper para aplicar filtro de novato/veterano em qualquer base com coluna VISTORIADOR
+def _filter_by_tempo(df: pd.DataFrame, col: str = "VISTORIADOR") -> pd.DataFrame:
+    if tipo_tc == "Todos" or not grupo_tc or col not in df.columns:
+        return df
+    alvo = "NOVATO" if tipo_tc == "Novatos" else "VETERANO"
+    return df[df[col].map(lambda v: grupo_tc.get(v, "") == alvo)]
 
 if f_unids and "UNIDADE" in viewQ.columns:
     viewQ = viewQ[viewQ["UNIDADE"].isin([_upper(u) for u in f_unids])]
 if f_vists:
     viewQ = viewQ[viewQ["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
 
-# aplica filtro de tempo de casa na base de qualidade
-if tempo_sel and tempo_map:
-    allowed_tc = set(tempo_sel)
-    viewQ = viewQ[viewQ["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
+# aplica filtro de tempo de casa (novatos/veteranos) na base de qualidade
+viewQ = _filter_by_tempo(viewQ, "VISTORIADOR")
 
 if viewQ.empty:
     st.info("Sem registros de Qualidade no período/filtros."); st.stop()
@@ -475,9 +497,7 @@ if not dfP.empty:
         viewP = viewP[viewP["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
 
     # aplica filtro de tempo de casa também na produção
-    if tempo_sel and tempo_map and "VISTORIADOR" in viewP.columns:
-        allowed_tc = set(tempo_sel)
-        viewP = viewP[viewP["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
+    viewP = _filter_by_tempo(viewP, "VISTORIADOR")
 else:
     viewP = dfP.copy()
 
@@ -520,9 +540,7 @@ if "VISTORIADOR" in prev_base_cards.columns and len(f_vists):
     prev_base_cards = prev_base_cards[prev_base_cards["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
 
 # aplica tempo de casa também no comparativo mensal
-if tempo_sel and tempo_map and "VISTORIADOR" in prev_base_cards.columns:
-    allowed_tc = set(tempo_sel)
-    prev_base_cards = prev_base_cards[prev_base_cards["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
+prev_base_cards = _filter_by_tempo(prev_base_cards, "VISTORIADOR")
 
 prev_total = int(len(prev_base_cards))
 prev_gg = int(prev_base_cards["GRAVIDADE"].isin(grav_gg).sum()) if "GRAVIDADE" in prev_base_cards.columns else 0
@@ -561,9 +579,7 @@ if "UNIDADE" in mtd_all.columns and len(f_unids):
 if "VISTORIADOR" in mtd_all.columns and len(f_vists):
     mtd_all = mtd_all[mtd_all["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
 
-if tempo_sel and tempo_map and "VISTORIADOR" in mtd_all.columns:
-    allowed_tc = set(tempo_sel)
-    mtd_all = mtd_all[mtd_all["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
+mtd_all = _filter_by_tempo(mtd_all, "VISTORIADOR")
 
 erros_mtd_total = int(len(mtd_all))
 erros_mtd_gg = int(mtd_all["GRAVIDADE"].isin(grav_gg).sum()) if "GRAVIDADE" in mtd_all.columns else 0
@@ -702,9 +718,7 @@ if start_d == end_d == today_local:
     if len(f_vists) and "VISTORIADOR" in df_yest.columns:
         df_yest = df_yest[df_yest["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
 
-    if tempo_sel and tempo_map and "VISTORIADOR" in df_yest.columns:
-        allowed_tc = set(tempo_sel)
-        df_yest = df_yest[df_yest["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
+    df_yest = _filter_by_tempo(df_yest, "VISTORIADOR")
 
     if "DATA_TS" not in df_yest.columns:
         df_yest["DATA_TS"] = pd.to_datetime(df_yest["DATA"], errors="coerce")
@@ -1113,9 +1127,7 @@ if prod["vist"].sum() == 0:
         if "VISTORIADOR" in prod_month.columns and len(f_vists):
             prod_month = prod_month[prod_month["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
         # filtro tempo de casa no fallback mensal
-        if tempo_sel and tempo_map and "VISTORIADOR" in prod_month.columns:
-            allowed_tc = set(tempo_sel)
-            prod_month = prod_month[prod_month["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
+        prod_month = _filter_by_tempo(prod_month, "VISTORIADOR")
         prod = _make_prod(prod_month)
         if prod["vist"].sum() > 0:
             fallback_note = "Usando produção do mês (fallback), pois não houve produção no período selecionado."
@@ -1126,9 +1138,7 @@ if prod["vist"].sum() == 0 and not dfP.empty:
         prod_global = prod_global[prod_global["UNIDADE"].isin([_upper(u) for u in f_unids])]
     if "VISTORIADOR" in prod_global.columns and len(f_vists):
         prod_global = prod_global[prod_global["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
-    if tempo_sel and tempo_map and "VISTORIADOR" in prod_global.columns:
-        allowed_tc = set(tempo_sel)
-        prod_global = prod_global[prod_global["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
+    prod_global = _filter_by_tempo(prod_global, "VISTORIADOR")
     prod = _make_prod(prod_global)
     fallback_note = "Usando produção global (fallback), pois não há produção no mês/período selecionado."
 
