@@ -305,6 +305,9 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             c_unid = _find_col(cols, "UNIDADE")
             c_meta = _find_col(cols, "META_MENSAL", "META MENSAL", "META")
             c_du   = _find_col(cols, "DIAS ÚTEIS", "DIAS UTEIS", "DIAS_UTEIS")
+            # NOVO: coluna tempo de casa (aceita "tempo de casa", "TEMPO_CASA" etc.)
+            c_tc   = _find_col(cols, "TEMPO_CASA", "TEMPO CASA", "TEMPO DE CASA", "TEMPO DE CASA")
+
             out = pd.DataFrame()
             out["VISTORIADOR"] = dm[c_vist].astype(str).map(_upper) if c_vist else ""
             out["UNIDADE"] = dm[c_unid].astype(str).map(_upper) if c_unid else ""
@@ -312,6 +315,10 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             out["DIAS_UTEIS"]  = pd.to_numeric(dm[c_du], errors="coerce").fillna(np.nan)
             out["DIAS_UTEIS"]  = out["DIAS_UTEIS"].astype(float).round().astype("Int64")
             out["YM"] = ym or ""
+            if c_tc:
+                out["TEMPO_CASA"] = dm[c_tc].astype(str).map(_upper)
+            else:
+                out["TEMPO_CASA"] = ""
             metas = out
     except Exception:
         metas = pd.DataFrame()
@@ -376,7 +383,18 @@ if not dq_all:
 
 dfQ = pd.concat(dq_all, ignore_index=True)
 dfP = pd.concat(dp_all, ignore_index=True) if dp_all else pd.DataFrame(columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"])
-dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","YM"])
+dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","YM","TEMPO_CASA"])
+
+
+# ------------------ MAPA TEMPO DE CASA (para filtros e tabela) ------------------
+tempo_map = {}
+if not dfMetas.empty and "TEMPO_CASA" in dfMetas.columns:
+    metas_tc = dfMetas.copy()
+    metas_tc["VISTORIADOR"] = metas_tc["VISTORIADOR"].astype(str).map(_upper)
+    metas_tc["TEMPO_CASA"] = metas_tc["TEMPO_CASA"].astype(str).map(_upper)
+    metas_tc = metas_tc[metas_tc["TEMPO_CASA"].str.strip() != ""]
+    if not metas_tc.empty:
+        tempo_map = metas_tc.drop_duplicates("VISTORIADOR").set_index("VISTORIADOR")["TEMPO_CASA"].to_dict()
 
 
 # ------------------ FILTROS PRINCIPAIS ------------------
@@ -413,16 +431,30 @@ unids = sorted(viewQ["UNIDADE"].dropna().unique().tolist()) if "UNIDADE" in view
 vist_opts = sorted(viewQ["VISTORIADOR"].dropna().unique().tolist()) if "VISTORIADOR" in viewQ.columns else []
 
 with col2:
-    c21, c22 = st.columns(2)
+    c21, c22, c23 = st.columns(3)
     with c21:
         f_unids = st.multiselect("Unidades (opcional)", unids, default=unids)
     with c22:
         f_vists = st.multiselect("Vistoriadores (opcional)", vist_opts)
+    # NOVO: filtro por tempo de casa (multiseleção)
+    tempo_opts = []
+    if tempo_map:
+        tempo_opts = sorted(set(tempo_map.values()))
+    with c23:
+        if tempo_opts:
+            tempo_sel = st.multiselect("Tempo de casa", tempo_opts, default=tempo_opts)
+        else:
+            tempo_sel = []
 
 if f_unids and "UNIDADE" in viewQ.columns:
     viewQ = viewQ[viewQ["UNIDADE"].isin([_upper(u) for u in f_unids])]
 if f_vists:
     viewQ = viewQ[viewQ["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+
+# aplica filtro de tempo de casa na base de qualidade
+if tempo_sel and tempo_map:
+    allowed_tc = set(tempo_sel)
+    viewQ = viewQ[viewQ["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
 
 if viewQ.empty:
     st.info("Sem registros de Qualidade no período/filtros."); st.stop()
@@ -441,6 +473,11 @@ if not dfP.empty:
         viewP = viewP[viewP["UNIDADE"].isin([_upper(u) for u in f_unids])]
     if f_vists and "VISTORIADOR" in viewP.columns:
         viewP = viewP[viewP["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+
+    # aplica filtro de tempo de casa também na produção
+    if tempo_sel and tempo_map and "VISTORIADOR" in viewP.columns:
+        allowed_tc = set(tempo_sel)
+        viewP = viewP[viewP["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
 else:
     viewP = dfP.copy()
 
@@ -482,6 +519,11 @@ if "UNIDADE" in prev_base_cards.columns and len(f_unids):
 if "VISTORIADOR" in prev_base_cards.columns and len(f_vists):
     prev_base_cards = prev_base_cards[prev_base_cards["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
 
+# aplica tempo de casa também no comparativo mensal
+if tempo_sel and tempo_map and "VISTORIADOR" in prev_base_cards.columns:
+    allowed_tc = set(tempo_sel)
+    prev_base_cards = prev_base_cards[prev_base_cards["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
+
 prev_total = int(len(prev_base_cards))
 prev_gg = int(prev_base_cards["GRAVIDADE"].isin(grav_gg).sum()) if "GRAVIDADE" in prev_base_cards.columns else 0
 
@@ -518,6 +560,10 @@ if "UNIDADE" in mtd_all.columns and len(f_unids):
     mtd_all = mtd_all[mtd_all["UNIDADE"].isin([_upper(u) for u in f_unids])]
 if "VISTORIADOR" in mtd_all.columns and len(f_vists):
     mtd_all = mtd_all[mtd_all["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+
+if tempo_sel and tempo_map and "VISTORIADOR" in mtd_all.columns:
+    allowed_tc = set(tempo_sel)
+    mtd_all = mtd_all[mtd_all["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
 
 erros_mtd_total = int(len(mtd_all))
 erros_mtd_gg = int(mtd_all["GRAVIDADE"].isin(grav_gg).sum()) if "GRAVIDADE" in mtd_all.columns else 0
@@ -655,6 +701,10 @@ if start_d == end_d == today_local:
         df_yest = df_yest[df_yest["UNIDADE"].isin([_upper(u) for u in f_unids])]
     if len(f_vists) and "VISTORIADOR" in df_yest.columns:
         df_yest = df_yest[df_yest["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+
+    if tempo_sel and tempo_map and "VISTORIADOR" in df_yest.columns:
+        allowed_tc = set(tempo_sel)
+        df_yest = df_yest[df_yest["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
 
     if "DATA_TS" not in df_yest.columns:
         df_yest["DATA_TS"] = pd.to_datetime(df_yest["DATA"], errors="coerce")
@@ -1062,12 +1112,24 @@ if prod["vist"].sum() == 0:
             prod_month = prod_month[prod_month["UNIDADE"].isin([_upper(u) for u in f_unids])]
         if "VISTORIADOR" in prod_month.columns and len(f_vists):
             prod_month = prod_month[prod_month["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+        # filtro tempo de casa no fallback mensal
+        if tempo_sel and tempo_map and "VISTORIADOR" in prod_month.columns:
+            allowed_tc = set(tempo_sel)
+            prod_month = prod_month[prod_month["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
         prod = _make_prod(prod_month)
         if prod["vist"].sum() > 0:
             fallback_note = "Usando produção do mês (fallback), pois não houve produção no período selecionado."
 
 if prod["vist"].sum() == 0 and not dfP.empty:
-    prod = _make_prod(dfP.copy())
+    prod_global = dfP.copy()
+    if "UNIDADE" in prod_global.columns and len(f_unids):
+        prod_global = prod_global[prod_global["UNIDADE"].isin([_upper(u) for u in f_unids])]
+    if "VISTORIADOR" in prod_global.columns and len(f_vists):
+        prod_global = prod_global[prod_global["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+    if tempo_sel and tempo_map and "VISTORIADOR" in prod_global.columns:
+        allowed_tc = set(tempo_sel)
+        prod_global = prod_global[prod_global["VISTORIADOR"].map(lambda v: tempo_map.get(v, "") in allowed_tc)]
+    prod = _make_prod(prod_global)
     fallback_note = "Usando produção global (fallback), pois não há produção no mês/período selecionado."
 
 # ------------------ QUALIDADE ------------------
@@ -1080,6 +1142,12 @@ qual = (
 
 # ------------------ BASE FINAL ------------------
 base = prod.merge(qual, on="VISTORIADOR", how="outer").fillna(0)
+
+# adiciona tempo de casa na base final
+if tempo_map:
+    base["TEMPO_CASA"] = base["VISTORIADOR"].map(lambda v: tempo_map.get(v, ""))
+else:
+    base["TEMPO_CASA"] = ""
 
 den = base["liq"] if denom_mode.startswith("Líquida") else base["vist"]
 den = den.replace({0: np.nan})
@@ -1144,7 +1212,7 @@ fmt["%ERRO_GG"] = fmt.apply(lambda r: _fmt_val_pct(r["%ERRO_GG"], r["FAROL_%ERRO
 # Ordenação decrescente pelo valor numérico real (%ERRO)
 fmt_sorted = fmt.sort_values(by="%ERRO", key=lambda col: base.loc[col.index, "%ERRO"], ascending=False)
 
-cols_view = ["VISTORIADOR","UNIDADE","vist","rev","liq","erros","erros_gg","%ERRO","%ERRO_GG"]
+cols_view = ["VISTORIADOR","UNIDADE","TEMPO_CASA","vist","rev","liq","erros","erros_gg","%ERRO","%ERRO_GG"]
 
 st.dataframe(
     fmt_sorted[cols_view],
@@ -1168,7 +1236,7 @@ else:
     ws.title = "Erros por Vistoriador"
 
     # Cabeçalho
-    headers = ["VISTORIADOR","UNIDADE","vist","rev","liq","erros","erros_gg","%ERRO","%ERRO_GG"]
+    headers = ["VISTORIADOR","UNIDADE","TEMPO_CASA","vist","rev","liq","erros","erros_gg","%ERRO","%ERRO_GG"]
     ws.append(headers)
 
     # Linhas (usamos o DataFrame já ordenado e com farol calculado)
@@ -1176,6 +1244,7 @@ else:
         ws.append([
             r["VISTORIADOR"],
             r.get("UNIDADE", ""),
+            r.get("TEMPO_CASA", ""),
             int(r["vist"]), int(r["rev"]), int(r["liq"]),
             int(r["erros"]), int(r["erros_gg"]),
             r["%ERRO"], r["%ERRO_GG"]
@@ -1191,19 +1260,19 @@ else:
             return PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")  # vermelho
         return PatternFill(fill_type=None)
 
-    # Aplicar cores nas colunas %ERRO (H) e %ERRO_GG (I)
+    # Aplicar cores nas colunas %ERRO (I) e %ERRO_GG (J)
     for i, (_, r) in enumerate(fmt_sorted.iterrows(), start=2):
         fill_total = _fill_from_farol(r.get("FAROL_%ERRO"))
         fill_gg    = _fill_from_farol(r.get("FAROL_%ERRO_GG"))
 
-        ws[f"H{i}"].fill = fill_total
-        ws[f"I{i}"].fill = fill_gg
+        ws[f"I{i}"].fill = fill_total
+        ws[f"J{i}"].fill = fill_gg
 
-        ws[f"H{i}"].alignment = Alignment(horizontal="center")
         ws[f"I{i}"].alignment = Alignment(horizontal="center")
+        ws[f"J{i}"].alignment = Alignment(horizontal="center")
 
     # Largura das colunas
-    widths = {"A":28, "B":18, "C":10, "D":10, "E":10, "F":10, "G":10, "H":16, "I":16}
+    widths = {"A":28, "B":18, "C":14, "D":10, "E":10, "F":10, "G":10, "H":10, "I":16, "J":16}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
 
@@ -1518,7 +1587,7 @@ rank = rank[den > 0].replace({np.inf: np.nan}).dropna(subset=["%ERRO"])
 
 den_col = "liq" if denom_mode.startswith("Líquida") else "vist"
 col_titulo_den = "vistorias líquidas" if den_col == "liq" else "vistorias"
-cols_rank = ["VISTORIADOR","UNIDADE", den_col, "erros", "%ERRO", "%ERRO_GG"]
+cols_rank = ["VISTORIADOR","UNIDADE","TEMPO_CASA", den_col, "erros", "%ERRO", "%ERRO_GG"]
 rank_view = rank[cols_rank].rename(columns={den_col: col_titulo_den})
 
 for c in [col_titulo_den, "erros"]:
@@ -1550,4 +1619,3 @@ else:
     df_fraude = df_fraude[cols_fraude].sort_values(["DATA","UNIDADE","VISTORIADOR"])
     st.dataframe(df_fraude, use_container_width=True, hide_index=True)
     st.caption('<div class="table-note">* Somente linhas cujo **ERRO** é exatamente “TENTATIVA DE FRAUDE”.</div>', unsafe_allow_html=True)
-
